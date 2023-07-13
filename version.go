@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package otelresty // import "go.opentelemetry.io/contrib/instrumentation/github.com/go-resty/resty/otelresty"
+package otelresty // import "github.com/dubonzi/otelresty"
 
 // Version is the current release version of the go-resty instrumentation.
 func Version() string {

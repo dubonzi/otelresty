@@ -1,4 +1,4 @@
-module go.opentelemetry.io/contrib/instrumentation/github.com/go-resty/resty/otelresty
+module github.com/dubonzi/otelresty
 
 go 1.19
 

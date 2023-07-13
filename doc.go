@@ -14,4 +14,4 @@
 
 // Package otelresty instruments the go-resty/resty package
 // (https://github.com/go-resty/resty).
-package otelresty // import "go.opentelemetry.io/contrib/instrumentation/github.com/go-resty/resty/otelresty"
+package otelresty // import "github.com/dubonzi/otelresty"
