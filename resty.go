@@ -34,13 +34,13 @@ func TraceClient(client *resty.Client, options ...Option) {
 		cfg.TracerProvider = otel.GetTracerProvider()
 	}
 	tracer := cfg.TracerProvider.Tracer(
-		tracerName,
+		cfg.TracerName,
 		oteltrace.WithInstrumentationVersion(SemVersion()),
 	)
 
 	client.OnBeforeRequest(onBeforeRequest(tracer, cfg))
-	client.OnAfterResponse(onAfterResponse)
-	client.OnError(onError)
+	client.OnAfterResponse(onAfterResponse(cfg))
+	client.OnError(onError(cfg))
 
 }
 
@@ -50,7 +50,7 @@ func onBeforeRequest(tracer oteltrace.Tracer, cfg *config) resty.RequestMiddlewa
 			return nil
 		}
 
-		ctx, span := tracer.Start(req.Context(), cfg.SpanNameFormatter("", req), cfg.SpanStartOptions...)
+		ctx, span := tracer.Start(req.Context(), req.Method, cfg.SpanStartOptions...)
 
 		attributes := []attribute.KeyValue{
 			attribute.String("http.url", req.URL),
@@ -69,15 +69,27 @@ func onBeforeRequest(tracer oteltrace.Tracer, cfg *config) resty.RequestMiddlewa
 	}
 }
 
-func onAfterResponse(c *resty.Client, res *resty.Response) error {
-	span := trace.SpanFromContext(res.Request.Context())
-	span.SetAttributes(httpconv.ClientResponse(res.RawResponse)...)
-	span.End()
-	return nil
+func onAfterResponse(cfg *config) resty.ResponseMiddleware {
+	return func(c *resty.Client, res *resty.Response) error {
+		span := trace.SpanFromContext(res.Request.Context())
+		span.SetAttributes(httpconv.ClientResponse(res.RawResponse)...)
+
+		// Setting request attributes here since res.Request.RawRequest is nil
+		// in onBeforeRequest.
+		span.SetName(cfg.SpanNameFormatter("", res.Request))
+		span.SetAttributes(httpconv.ClientRequest(res.Request.RawRequest)...)
+
+		span.End()
+		return nil
+	}
 }
 
-func onError(req *resty.Request, err error) {
-	span := trace.SpanFromContext(req.Context())
-	span.SetStatus(codes.Error, err.Error())
-	span.End()
+func onError(cfg *config) resty.ErrorHook {
+	return func(req *resty.Request, err error) {
+		span := trace.SpanFromContext(req.Context())
+		span.SetStatus(codes.Error, err.Error())
+		span.SetName(cfg.SpanNameFormatter("", req))
+		span.SetAttributes(httpconv.ClientRequest(req.RawRequest)...)
+		span.End()
+	}
 }

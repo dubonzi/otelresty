@@ -37,18 +37,20 @@ type config struct {
 	SpanNameFormatter func(string, *resty.Request) string
 	SpanStartOptions  []oteltrace.SpanStartOption
 	Skipper           func(*resty.Request) bool
+	TracerName        string
 }
 
 func newConfig(options ...Option) *config {
 	cfg := &config{
-		Propagators:    otel.GetTextMapPropagator(),
-		TracerProvider: otel.GetTracerProvider(),
-		Skipper:        defaultSkipper,
+		Propagators:       otel.GetTextMapPropagator(),
+		TracerProvider:    otel.GetTracerProvider(),
+		Skipper:           defaultSkipper,
+		TracerName:        tracerName,
+		SpanNameFormatter: defaultSpanNameFormatter,
 	}
 
 	defaultOpts := []Option{
 		WithSpanOptions(oteltrace.WithSpanKind(oteltrace.SpanKindClient)),
-		WithSpanNameFormatter(defaultSpanNameFormatter),
 	}
 
 	options = append(defaultOpts, options...)
@@ -116,5 +118,13 @@ func WithSpanOptions(opts ...trace.SpanStartOption) Option {
 func WithSpanNameFormatter(f func(operation string, r *resty.Request) string) Option {
 	return optionFunc(func(c *config) {
 		c.SpanNameFormatter = f
+	})
+}
+
+// WithTracerName sets the name of the tracer used to create spans. The
+// default value is "github.com/dubonzi/otelresty".
+func WithTracerName(name string) Option {
+	return optionFunc(func(c *config) {
+		c.TracerName = name
 	})
 }
