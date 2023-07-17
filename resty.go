@@ -15,7 +15,6 @@ package otelresty // import "github.com/dubonzi/otelresty"
 import (
 	"github.com/go-resty/resty/v2"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/semconv/v1.13.0/httpconv"
@@ -50,18 +49,7 @@ func onBeforeRequest(tracer oteltrace.Tracer, cfg *config) resty.RequestMiddlewa
 			return nil
 		}
 
-		ctx, span := tracer.Start(req.Context(), req.Method, cfg.SpanStartOptions...)
-
-		attributes := []attribute.KeyValue{
-			attribute.String("http.url", req.URL),
-			attribute.String("http.method", req.Method),
-		}
-
-		if agent := req.Header.Get("user-agent"); agent != "" {
-			attributes = append(attributes, attribute.String("http.user_agent", agent))
-		}
-
-		span.SetAttributes(attributes...)
+		ctx, _ := tracer.Start(req.Context(), req.Method, cfg.SpanStartOptions...)
 
 		cfg.Propagators.Inject(ctx, propagation.HeaderCarrier(req.Header))
 		req.SetContext(ctx)
