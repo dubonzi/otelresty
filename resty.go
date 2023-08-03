@@ -75,6 +75,7 @@ func onAfterResponse(cfg *config) resty.ResponseMiddleware {
 func onError(cfg *config) resty.ErrorHook {
 	return func(req *resty.Request, err error) {
 		span := trace.SpanFromContext(req.Context())
+		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		span.SetName(cfg.SpanNameFormatter("", req))
 		span.SetAttributes(httpconv.ClientRequest(req.RawRequest)...)
