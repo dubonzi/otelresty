@@ -26,6 +26,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 func TestValidSpanIsCreated(t *testing.T) {
@@ -51,7 +52,7 @@ func TestPropagationWithCustomPropagator(t *testing.T) {
 	defer srv.Close()
 
 	prop := b3.New()
-	provider := trace.NewNoopTracerProvider()
+	provider := noop.NewTracerProvider()
 	ctx := context.Background()
 	cli := resty.New()
 
