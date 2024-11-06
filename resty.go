@@ -15,6 +15,7 @@ package otelresty // import "github.com/dubonzi/otelresty"
 import (
 	"github.com/go-resty/resty/v2"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/semconv/v1.13.0/httpconv"
@@ -66,11 +67,7 @@ func onAfterResponse(cfg *config) resty.ResponseMiddleware {
 		// Setting request attributes here since res.Request.RawRequest is nil
 		// in onBeforeRequest.
 		span.SetName(cfg.SpanNameFormatter("", res.Request))
-		span.SetAttributes(httpconv.ClientRequest(res.Request.RawRequest)...)
-
-		if cfg.HideURL {
-			span.SetAttributes(semconv.HTTPURLKey.String("<redacted>"))
-		}
+		span = setRequestAttributes(span, cfg, res.Request)
 
 		span.End()
 		return nil
@@ -83,7 +80,20 @@ func onError(cfg *config) resty.ErrorHook {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		span.SetName(cfg.SpanNameFormatter("", req))
-		span.SetAttributes(httpconv.ClientRequest(req.RawRequest)...)
+
+		span = setRequestAttributes(span, cfg, req)
+
 		span.End()
 	}
+}
+
+func setRequestAttributes(span oteltrace.Span, cfg *config, req *resty.Request) oteltrace.Span {
+	span.SetAttributes(httpconv.ClientRequest(req.RawRequest)...)
+	span.SetAttributes(attribute.String("http.path", req.RawRequest.URL.Path))
+
+	if cfg.HideURL {
+		span.SetAttributes(semconv.HTTPURLKey.String("<redacted>"))
+	}
+
+	return span
 }
