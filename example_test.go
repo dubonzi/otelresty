@@ -8,7 +8,10 @@ import (
 
 func ExampleTraceClient() {
 	cli := resty.New()
-	opts := []Option{WithTracerName("my-tracer")}
+	opts := []Option{
+		WithTracerName("my-tracer"),
+		WithHideURL(true),
+	}
 	server := httptest.NewServer(testHandler())
 
 	// this hook is executed before the hook added by `TraceClient`

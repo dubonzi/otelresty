@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/semconv/v1.13.0/httpconv"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	"go.opentelemetry.io/otel/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
@@ -66,6 +67,10 @@ func onAfterResponse(cfg *config) resty.ResponseMiddleware {
 		// in onBeforeRequest.
 		span.SetName(cfg.SpanNameFormatter("", res.Request))
 		span.SetAttributes(httpconv.ClientRequest(res.Request.RawRequest)...)
+
+		if cfg.HideURL {
+			span.SetAttributes(semconv.HTTPURLKey.String("<redacted>"))
+		}
 
 		span.End()
 		return nil

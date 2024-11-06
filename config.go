@@ -38,6 +38,7 @@ type config struct {
 	SpanStartOptions  []oteltrace.SpanStartOption
 	Skipper           func(*resty.Request) bool
 	TracerName        string
+	HideURL           bool
 }
 
 func newConfig(options ...Option) *config {
@@ -47,6 +48,7 @@ func newConfig(options ...Option) *config {
 		Skipper:           defaultSkipper,
 		TracerName:        tracerName,
 		SpanNameFormatter: defaultSpanNameFormatter,
+		HideURL:           false,
 	}
 
 	defaultOpts := []Option{
@@ -126,5 +128,13 @@ func WithSpanNameFormatter(f func(operation string, r *resty.Request) string) Op
 func WithTracerName(name string) Option {
 	return optionFunc(func(c *config) {
 		c.TracerName = name
+	})
+}
+
+// WithHideURL if set to true, the http.url will be replaced with "<redacted>". The
+// default value is false.
+func WithHideURL(hide bool) Option {
+	return optionFunc(func(c *config) {
+		c.HideURL = hide
 	})
 }
