@@ -91,6 +91,8 @@ func setRequestAttributes(span oteltrace.Span, cfg *config, req *resty.Request) 
 	span.SetAttributes(httpconv.ClientRequest(req.RawRequest)...)
 	span.SetAttributes(attribute.String("http.path", req.RawRequest.URL.Path))
 
+	span.SetAttributes(attribute.String("resty.url", req.URL))
+
 	if cfg.HideURL {
 		span.SetAttributes(semconv.HTTPURLKey.String("<redacted>"))
 	}
