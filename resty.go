@@ -69,7 +69,9 @@ func onBeforeRequest(tracer oteltrace.Tracer, cfg *config) resty.RequestMiddlewa
 func onAfterResponse(cfg *config) resty.ResponseMiddleware {
 	return func(c *resty.Client, res *resty.Response) error {
 		span := trace.SpanFromContext(res.Request.Context())
-		span.SetAttributes(httpconv.ClientResponse(res.RawResponse)...)
+		if res.RawResponse != nil {
+			span.SetAttributes(httpconv.ClientResponse(res.RawResponse)...)
+		}
 
 		// Setting request attributes here since res.Request.RawRequest is nil
 		// in onBeforeRequest.
@@ -95,8 +97,14 @@ func onError(cfg *config) resty.ErrorHook {
 }
 
 func setRequestAttributes(span oteltrace.Span, cfg *config, req *resty.Request) oteltrace.Span {
+	if req.RawRequest == nil {
+		return span
+	}
+
 	span.SetAttributes(httpconv.ClientRequest(req.RawRequest)...)
-	span.SetAttributes(attribute.String("http.path", req.RawRequest.URL.Path))
+	if req.RawRequest.URL != nil {
+		span.SetAttributes(attribute.String("http.path", req.RawRequest.URL.Path))
+	}
 
 	if cfg.HideURL {
 		span.SetAttributes(semconv.HTTPURLKey.String("<redacted>"))
