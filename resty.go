@@ -51,9 +51,16 @@ func onBeforeRequest(tracer oteltrace.Tracer, cfg *config) resty.RequestMiddlewa
 			return nil
 		}
 
-		ctx, _ := tracer.Start(req.Context(), req.Method, cfg.SpanStartOptions...)
+		ctx, span := tracer.Start(req.Context(), req.Method, cfg.SpanStartOptions...)
 
 		cfg.Propagators.Inject(ctx, propagation.HeaderCarrier(req.Header))
+
+		if cfg.HideURL {
+			span.SetAttributes(attribute.String("resty.url", "<redacted>"))
+		} else {
+			span.SetAttributes(attribute.String("resty.url", req.URL))
+		}
+
 		req.SetContext(ctx)
 		return nil
 	}
@@ -90,8 +97,6 @@ func onError(cfg *config) resty.ErrorHook {
 func setRequestAttributes(span oteltrace.Span, cfg *config, req *resty.Request) oteltrace.Span {
 	span.SetAttributes(httpconv.ClientRequest(req.RawRequest)...)
 	span.SetAttributes(attribute.String("http.path", req.RawRequest.URL.Path))
-
-	span.SetAttributes(attribute.String("resty.url", req.URL))
 
 	if cfg.HideURL {
 		span.SetAttributes(semconv.HTTPURLKey.String("<redacted>"))
