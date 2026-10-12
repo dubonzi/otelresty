@@ -13,6 +13,8 @@
 package otelresty // import "github.com/dubonzi/otelresty"
 
 import (
+	"errors"
+
 	"github.com/go-resty/resty/v2"
 
 	"go.opentelemetry.io/otel"
@@ -44,11 +46,18 @@ type config struct {
 	Propagators               propagation.TextMapPropagator
 	SpanNameFormatter         func(string, *resty.Request) string
 	ErrorDescriptionFormatter func(err error) string
-	ErrorCustmizer            func(err error) error
+	ErrorCustomizer           func(err error) error
+	ErrorIgnorer              func(err error) bool
 	SpanStartOptions          []oteltrace.SpanStartOption
 	Skipper                   func(*resty.Request) bool
 	TracerName                string
 	HideURL                   bool
+}
+
+// isErrorIgnored reports whether the given error should not mark the span
+// as erroneous.
+func (c *config) isErrorIgnored(err error) bool {
+	return c.ErrorIgnorer != nil && c.ErrorIgnorer(err)
 }
 
 func newConfig(options ...Option) *config {
@@ -59,7 +68,7 @@ func newConfig(options ...Option) *config {
 		TracerName:                tracerName,
 		SpanNameFormatter:         defaultSpanNameFormatter,
 		ErrorDescriptionFormatter: defaultErrorDescriptionFormatter,
-		ErrorCustmizer:            defaultErrorCustomizer,
+		ErrorCustomizer:           defaultErrorCustomizer,
 		HideURL:                   false,
 	}
 
@@ -147,7 +156,37 @@ func WithErrorDescriptionFormatter(f func(err error) string) Option {
 // the `onError` hook and allows for error customization.
 func WithErrorCustomizer(f func(err error) error) Option {
 	return optionFunc(func(c *config) {
-		c.ErrorCustmizer = f
+		c.ErrorCustomizer = f
+	})
+}
+
+// WithErrorIgnorer takes a function that will be called during the `onError`
+// hook, before the span is marked as erroneous. If it returns true, the
+// error is not recorded and the span status is left untouched.
+func WithErrorIgnorer(f func(err error) bool) Option {
+	return optionFunc(func(c *config) {
+		if f != nil {
+			c.ErrorIgnorer = f
+		}
+	})
+}
+
+// WithIgnoredErrors takes a list of errors that should not mark the span as
+// erroneous. Matching is done with errors.Is, so wrapped errors and
+// sentinel errors (e.g. resty.ErrAutoRedirectDisabled) are covered.
+func WithIgnoredErrors(errs ...error) Option {
+	return optionFunc(func(c *config) {
+		if len(errs) == 0 {
+			return
+		}
+		c.ErrorIgnorer = func(err error) bool {
+			for _, target := range errs {
+				if errors.Is(err, target) {
+					return true
+				}
+			}
+			return false
+		}
 	})
 }
 
