@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -44,27 +45,49 @@ type attemptKey struct{}
 // attempt tracks the span of a single request attempt and guarantees it is
 // ended exactly once.
 type attempt struct {
+	request   *resty.Request
 	span      trace.Span
 	once      sync.Once
 	responded atomic.Bool
+	errMu     sync.Mutex
+	err       error
+	response  *resty.Response
+	retryEnd  time.Time
 }
 
 // finish runs fn (if any) against the span and ends it. Only the first call
 // has any effect.
-func (a *attempt) finish(fn func(trace.Span)) {
+func (a *attempt) finish(fn func(trace.Span), opts ...trace.SpanEndOption) {
 	a.once.Do(func() {
 		if fn != nil {
 			fn(a.span)
 		}
-		a.span.End()
+		a.span.End(opts...)
 	})
 }
 
-// attemptFrom returns the attempt stored in ctx by the request middleware, or
-// nil if the request is not being traced. It deliberately never falls back to
+func (a *attempt) captureError(err error) {
+	if err != nil {
+		a.errMu.Lock()
+		a.err = err
+		a.errMu.Unlock()
+	}
+}
+
+func (a *attempt) capturedError() error {
+	a.errMu.Lock()
+	defer a.errMu.Unlock()
+	return a.err
+}
+
+// attemptFrom only returns an attempt owned by req. A nested request can
+// inherit the context key without owning the caller's attempt. Never fall back to
 // trace.SpanFromContext, which could return a span owned by the caller.
-func attemptFrom(ctx context.Context) *attempt {
-	a, _ := ctx.Value(attemptKey{}).(*attempt)
+func attemptFrom(req *resty.Request) *attempt {
+	a, _ := req.Context().Value(attemptKey{}).(*attempt)
+	if a != nil && a.request != req {
+		return nil
+	}
 	return a
 }
 
@@ -75,6 +98,9 @@ func attemptFrom(ctx context.Context) *attempt {
 // One span is created per request attempt. When a request is retried, the span
 // of each attempt is a child of the previous attempt's span, and every span is
 // ended exactly once.
+// Configure the client's transport, redirect policy and response middlewares
+// before calling TraceClient so attempt errors can be captured before Resty
+// clears them during retry processing.
 func TraceClient(client *resty.Client, options ...Option) {
 	cfg := newConfig(options...)
 	if cfg.TracerProvider == nil {
@@ -85,6 +111,7 @@ func TraceClient(client *resty.Client, options ...Option) {
 		trace.WithInstrumentationVersion(SemVersion()),
 		trace.WithSchemaURL(semconv.SchemaURL),
 	)
+	captureClientErrors(client)
 
 	client.AddRequestMiddleware(onBeforeRequest(tracer, cfg))
 	client.AddResponseMiddleware(onAfterResponse())
@@ -97,16 +124,15 @@ func TraceClient(client *resty.Client, options ...Option) {
 
 func onBeforeRequest(tracer trace.Tracer, cfg *config) resty.RequestMiddleware {
 	return func(_ *resty.Client, req *resty.Request) error {
-		if cfg.Skipper(req) {
-			return nil
-		}
-
 		ctx := req.Context()
-
-		// A retry re-runs the request middlewares. Close the previous attempt
-		// before starting the next one, in case nothing ended it already.
-		if prev := attemptFrom(ctx); prev != nil {
-			endAbandoned(prev, cfg, req)
+		// Only retries of this request may finish its previous attempt.
+		if prev := attemptFrom(req); prev != nil {
+			endRetriedAttempt(prev, cfg, req)
+		}
+		if cfg.Skipper(req) {
+			// Hide an inherited attempt from the HTTP transport as well as hooks.
+			req.SetContext(context.WithValue(ctx, attemptKey{}, (*attempt)(nil)))
+			return nil
 		}
 
 		// The previous attempt's span (if any) is the current span of ctx,
@@ -118,13 +144,18 @@ func onBeforeRequest(tracer trace.Tracer, cfg *config) resty.RequestMiddleware {
 		if cfg.HideURL {
 			span.SetAttributes(attribute.String("resty.url", redacted))
 		} else {
-			span.SetAttributes(attribute.String("resty.url", req.URL))
+			u, err := url.Parse(req.URL)
+			if err != nil {
+				span.SetAttributes(attribute.String("resty.url", redacted))
+			} else {
+				span.SetAttributes(attribute.String("resty.url", redactedUserinfo(u)))
+			}
 		}
 		if req.Attempt > 1 {
 			span.SetAttributes(semconv.HTTPRequestResendCount(req.Attempt - 1))
 		}
 
-		ctx = context.WithValue(ctx, attemptKey{}, &attempt{span: span})
+		ctx = context.WithValue(ctx, attemptKey{}, &attempt{request: req, span: span})
 		req.SetContext(ctx)
 		return nil
 	}
@@ -135,42 +166,40 @@ func onBeforeRequest(tracer trace.Tracer, cfg *config) resty.RequestMiddleware {
 // reported to the retry and error hooks.
 func onAfterResponse() resty.ResponseMiddleware {
 	return func(_ *resty.Client, res *resty.Response) error {
-		a := attemptFrom(res.Request.Context())
+		a := attemptFrom(res.Request)
 		if a == nil {
 			return nil
 		}
 		a.responded.Store(true)
+		a.response = res
+		a.captureError(res.CascadeError)
 		setResponseAttributes(a.span, res)
 		return nil
 	}
 }
 
-// onRetry ends the span of an attempt that is about to be retried, so its
-// duration does not include the backoff wait.
-//
-// resty may call the retry hooks with a nil error even when the attempt failed
-// (the error is not available once file readers are reset), so an attempt that
-// never received a response is treated as failed regardless of err.
+// onRetry saves the end timestamp and attributes before the retry wait. The
+// span stays open until another attempt starts or a final hook runs, because
+// cancellation or the retry strategy can still fail during the wait.
 func onRetry(cfg *config) resty.RetryHookFunc {
 	return func(res *resty.Response, err error) {
 		if res == nil || res.Request == nil {
 			return
 		}
-		a := attemptFrom(res.Request.Context())
+		a := attemptFrom(res.Request)
 		if a == nil {
 			return
 		}
-		if err != nil {
-			failAttempt(a, cfg, res.Request, err)
-			return
-		}
-		endAbandoned(a, cfg, res.Request)
+		a.response = res
+		a.captureError(err)
+		setRequestAttributes(a.span, cfg, res.Request)
+		a.retryEnd = time.Now()
 	}
 }
 
 func onSuccess(cfg *config) resty.SuccessHook {
 	return func(_ *resty.Client, res *resty.Response) {
-		a := attemptFrom(res.Request.Context())
+		a := attemptFrom(res.Request)
 		if a == nil {
 			return
 		}
@@ -182,7 +211,7 @@ func onSuccess(cfg *config) resty.SuccessHook {
 
 func onError(cfg *config) resty.ErrorHook {
 	return func(req *resty.Request, err error) {
-		a := attemptFrom(req.Context())
+		a := attemptFrom(req)
 		if a == nil {
 			return
 		}
@@ -190,37 +219,53 @@ func onError(cfg *config) resty.ErrorHook {
 	}
 }
 
-// endAbandoned ends the span of an attempt that was superseded by a retry. If
-// no response was received for it, the attempt is marked as failed, since the
-// underlying error is not available at this point.
-func endAbandoned(a *attempt, cfg *config, req *resty.Request) {
+// endRetriedAttempt runs only once the next attempt actually starts. Retry
+// hooks receive a cleared error in Resty rc.4, so use the captured attempt error.
+func endRetriedAttempt(a *attempt, cfg *config, req *resty.Request) {
+	var endOpts []trace.SpanEndOption
+	var eventOpts []trace.EventOption
+	if !a.retryEnd.IsZero() {
+		endOpts = append(endOpts, trace.WithTimestamp(a.retryEnd))
+		eventOpts = append(eventOpts, trace.WithTimestamp(a.retryEnd))
+	}
 	a.finish(func(span trace.Span) {
-		setRequestAttributes(span, cfg, req)
-		if !a.responded.Load() {
+		if a.retryEnd.IsZero() {
+			// Request-level retry hooks can replace the tracing hook.
+			setRequestAttributes(span, cfg, req)
+		}
+		if err := a.capturedError(); err != nil {
+			if a.response != nil {
+				err = &resty.ResponseError{Response: a.response, Err: err}
+			}
+			recordError(span, cfg, err, eventOpts...)
+		} else if !a.responded.Load() {
 			span.SetStatus(codes.Error, "request attempt failed")
 			span.SetAttributes(semconv.ErrorTypeOther)
 		}
-	})
+	}, endOpts...)
 }
 
 func failAttempt(a *attempt, cfg *config, req *resty.Request, err error) {
 	a.finish(func(span trace.Span) {
 		setRequestAttributes(span, cfg, req)
-
-		if err == nil || cfg.ErrorIgnorer(err) {
-			return
-		}
-
-		span.RecordError(cfg.ErrorCustomizer(err))
-		span.SetStatus(codes.Error, cfg.ErrorDescriptionFormatter(err))
-
-		typed := err
-		var respErr *resty.ResponseError
-		if errors.As(err, &respErr) && respErr.Err != nil {
-			typed = respErr.Err
-		}
-		span.SetAttributes(semconv.ErrorType(typed))
+		recordError(span, cfg, err)
 	})
+}
+
+func recordError(span trace.Span, cfg *config, err error, opts ...trace.EventOption) {
+	if err == nil || cfg.ErrorIgnorer(err) {
+		return
+	}
+
+	span.RecordError(cfg.ErrorCustomizer(err), opts...)
+	span.SetStatus(codes.Error, cfg.ErrorDescriptionFormatter(err))
+
+	typed := err
+	var respErr *resty.ResponseError
+	if errors.As(err, &respErr) && respErr.Err != nil {
+		typed = respErr.Err
+	}
+	span.SetAttributes(semconv.ErrorType(typed))
 }
 
 func setResponseAttributes(span trace.Span, res *resty.Response) {
