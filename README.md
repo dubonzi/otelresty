@@ -3,6 +3,10 @@
 
 This repository aims to create a custom instrumentation for the [go-resty](https://github.com/go-resty/resty) project.
 
+## Requirements
+
+Go 1.26.0 or newer, matching the minimum version required by [OpenTelemetry Go SDK v1.47.0](https://github.com/open-telemetry/opentelemetry-go/blob/v1.47.0/sdk/go.mod).
+
 ## How to use
 
 Usage is as simple as calling `TraceClient` passing a resty client and options, if needed.
