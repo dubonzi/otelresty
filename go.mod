@@ -9,6 +9,7 @@ require (
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
+	resty.dev/v3 v3.0.0-rc.4
 )
 
 require (
