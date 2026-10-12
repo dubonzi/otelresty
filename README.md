@@ -3,6 +3,10 @@
 
 This repository aims to create a custom instrumentation for the [go-resty](https://github.com/go-resty/resty) project.
 
+## Requirements
+
+Go 1.26.0 or newer, matching the minimum version required by [OpenTelemetry Go SDK v1.47.0](https://github.com/open-telemetry/opentelemetry-go/blob/v1.47.0/sdk/go.mod).
+
 ## How to use
 
 Usage is as simple as calling `TraceClient` passing a resty client and options, if needed.
@@ -42,3 +46,33 @@ otelresty.TraceClient(cli, otelresty.WithErrorIgnorer(func(err error) bool {
   return false
 }))
 ```
+
+## Resty v3
+
+Clients from [resty v3](https://github.com/go-resty/resty) (`resty.dev/v3`) are supported by the `restyv3` package, which is part of the same module:
+
+```go
+import (
+  "resty.dev/v3"
+
+  "github.com/dubonzi/otelresty/restyv3"
+)
+
+func main() {
+  cli := resty.New()
+
+  restyv3.TraceClient(cli, restyv3.WithTracerName("my-tracer"))
+}
+```
+
+It supports the same options as the resty v2 package, including `WithErrorIgnorer` and `WithIgnoredErrors`, which keep matching errors (checked with `errors.Is`) from marking the span as failed:
+
+```go
+restyv3.TraceClient(cli, restyv3.WithIgnoredErrors(errRedirectDisabled))
+```
+
+A span is created for each request attempt. When a request is retried, each attempt gets its own span, chained as a child of the previous attempt's span, and every span is ended exactly once. Spans use the OpenTelemetry HTTP semantic conventions (`semconv/v1.37.0`).
+
+Configure the transport, proxy, redirect policy and response middleware before calling `restyv3.TraceClient`. It wraps the configured transport and redirect policy, and captures response middleware errors before resty v3 rc.4 clears errors during retry processing. Replacing those components afterward bypasses error capture. URL credentials are redacted in both `resty.url` and `url.full`.
+
+Retry spans are finalized when the next attempt starts, using an end timestamp from before the backoff wait. If cancellation or the retry strategy stops the request during backoff, the final hook records that error and ends the current span instead.
