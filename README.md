@@ -19,3 +19,29 @@ func main() {
   otelresty.TraceClient(cli, opts...)
 }
 ```
+
+## Resty v3
+
+Clients from [resty v3](https://github.com/go-resty/resty) (`resty.dev/v3`) are supported by the `restyv3` package, which is part of the same module:
+
+```go
+import (
+  "resty.dev/v3"
+
+  "github.com/dubonzi/otelresty/restyv3"
+)
+
+func main() {
+  cli := resty.New()
+
+  restyv3.TraceClient(cli, restyv3.WithTracerName("my-tracer"))
+}
+```
+
+It supports the same options as the resty v2 package, plus `WithErrorIgnorer` and `WithIgnoredErrors`, which keep matching errors (checked with `errors.Is`) from marking the span as failed:
+
+```go
+restyv3.TraceClient(cli, restyv3.WithIgnoredErrors(errRedirectDisabled))
+```
+
+A span is created for each request attempt. When a request is retried, each attempt gets its own span, chained as a child of the previous attempt's span, and every span is ended exactly once. Spans use the OpenTelemetry HTTP semantic conventions (`semconv/v1.37.0`).
